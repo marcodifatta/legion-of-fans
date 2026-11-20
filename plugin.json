@@ -1,0 +1,18 @@
+{
+  "name": "Legion of Fans",
+  "author": "marcodifatta",
+  "flags": [
+    "root"
+  ],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "legion go",
+      "fan",
+      "thermal",
+      "root"
+    ],
+    "description": "Too Hot To Handle: curva ventola a scaglioni e temperature per Lenovo Legion Go (83E1).",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+  }
+}

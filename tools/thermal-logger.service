@@ -1,0 +1,11 @@
+[Unit]
+Description=Legion Go thermal logger (temps, power, TDP every 5s)
+
+[Service]
+ExecStart=%h/.local/bin/thermal-logger.sh
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target
