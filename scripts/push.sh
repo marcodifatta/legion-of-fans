@@ -13,8 +13,9 @@ NAME="Legion of Fans"
 pnpm run build
 STAGE="$(mktemp -d)"
 mkdir -p "$STAGE/$NAME"
-cp -R dist main.py plugin.json package.json LICENSE README.md "$STAGE/$NAME/"
+cp -R dist py_modules main.py plugin.json package.json LICENSE README.md "$STAGE/$NAME/"
 rm -f "$STAGE/$NAME/dist/"*.map
+find "$STAGE/$NAME" -name "__pycache__" -prune -exec rm -rf {} +
 
 ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "$HOST" 'rm -rf ~/legion-fan-stage && mkdir -p ~/legion-fan-stage'
 scp -q ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} -r "$STAGE/$NAME" "$HOST:legion-fan-stage/"

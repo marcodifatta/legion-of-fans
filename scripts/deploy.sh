@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install Legion of Fans on the Legion Go (run on the device with sudo).
-# Usage: sudo bash deploy.sh <staging-dir-containing-"Legion of Fans"> [--disable-panel]
+# Usage: sudo bash deploy.sh <staging-dir-containing-"Legion of Fans"> [--park-sdtdp | --disable-panel | --remove-panel]
 set -euo pipefail
 STAGE="$1"
 HOME_DIR="$(getent passwd "${SUDO_USER:-$USER}" | cut -d: -f6)"
@@ -33,6 +33,22 @@ if [[ "${2:-}" == "--remove-panel" ]]; then
     rm -f /etc/modprobe.d/panel-de-control-legion-fan.conf
     echo "modprobe: panel-de-control-legion-fan.conf -> legion-of-fans.conf"
   fi
+fi
+
+if [[ "${2:-}" == "--park-sdtdp" && -d "$PLUGINS/SimpleDeckyTDP" ]]; then
+  # Read-only undervolt check with SimpleDeckyTDP's own ryzenadj (prints the
+  # power table, writes nothing). The result is saved for review.
+  RYZ="$PLUGINS/SimpleDeckyTDP/bin/ryzenadj"
+  if [[ -x "$RYZ" ]]; then
+    { echo "== ryzenadj --info"; timeout 10 "$RYZ" --info 2>&1 | head -40; } > "$STAGE/ryzenadj-info.txt" || true
+    chown "${SUDO_USER:-root}" "$STAGE/ryzenadj-info.txt" 2>/dev/null || true
+    echo "diagnostica undervolt salvata in $STAGE/ryzenadj-info.txt"
+  fi
+  # Park the plugin; its settings stay in place so Legion of Fans can import them.
+  mkdir -p "$PARKED"
+  rm -rf "$PARKED/SimpleDeckyTDP"
+  mv "$PLUGINS/SimpleDeckyTDP" "$PARKED/"
+  echo "SimpleDeckyTDP messo da parte in $PARKED (non cancellato, impostazioni conservate)"
 fi
 
 rm -rf "$PLUGINS/Legion Fan" "$PLUGINS/Legion of Fans"

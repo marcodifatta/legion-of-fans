@@ -2,6 +2,25 @@
 
 Formato ispirato a [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.5.0] — 2026-11-22
+
+### Aggiunto
+- **TDP e GPU integrati** (tutte le funzioni di SimpleDeckyTDP utili sulla Legion Go):
+  - slider TDP da 5 W al massimo scelto (fino a 40 W), scritto sui tre limiti del firmware (sostenuto, breve, picco) ciascuno entro il proprio massimo;
+  - modalità GPU 🔋 Batteria, ⚖️ Bilanciata, ↔️ Intervallo (frequenza min/max) e 📌 Fissa;
+  - **profili per gioco** che si salvano da soli quando cambi qualcosa in gioco, profilo predefinito e predefinito con caricatore;
+  - pulsante "Usa il predefinito per questo gioco".
+- **CPU avanzate**: SMT, boost, governor ed EPP per profilo.
+- **Opzioni TDP**: attivazione separata di TDP, GPU e CPU, profili per gioco, profilo con caricatore, massimo dello slider, TDP massimo all'avvio di un gioco, TDP massimo o nessuna modifica al risveglio, SMT riattivato prima della sospensione.
+- **Import automatico** dei profili e delle opzioni di SimpleDeckyTDP al primo avvio.
+- **Controllo intelligente**: ogni 5 s verifica TDP, GPU e CPU e li riapplica solo se qualcosa li ha cambiati (contatore delle correzioni).
+- Rilevamento del gioco in esecuzione anche a menu chiuso, e del risveglio dalla sospensione.
+- Numero di versione in fondo al plugin.
+
+### Modificato
+- La protezione automatica ora abbassa il TDP del profilo in uso, senza più contendersi il valore con un altro plugin.
+- Il TDP viene scritto solo quando cambia (gioco, profilo, protezione, risveglio) invece che ogni 15 secondi.
+
 ## [0.4.0] — 2026-11-21
 
 ### Aggiunto

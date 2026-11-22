@@ -26,7 +26,6 @@ import {
   FaChevronDown,
   FaChevronRight,
   FaFan,
-  FaGamepad,
   FaMicrochip,
   FaPlug,
   FaRedo,
@@ -39,6 +38,7 @@ import { BsGpuCard } from "react-icons/bs";
 import { registerQamTab } from "./qamTab";
 import { CurveChart, HistoryChart, HOT, TempBar, tempColor, tempStatus, WARM } from "./charts";
 import { ACCENT, Styles } from "./styles";
+import { CpuControls, GPU_LABELS, PowerOptions, TdpGpuControls, type PowerProfile, type PowerSettings, type PowerState } from "./power";
 
 type Sensors = {
   cpu_c: number | null;
@@ -71,7 +71,7 @@ type Settings = {
   protect_temp: number;
   protect_interval_min: number;
   charge_limit: boolean;
-};
+} & PowerSettings;
 
 type Stats = {
   seconds: number;
@@ -97,17 +97,18 @@ type State = {
   settings: Settings;
   sensors: Partial<Sensors>;
   stats: Stats;
-  game: {
-    appid: number | null;
-    name: string | null;
-    profile: { tdp: number | null; gpu_mode: string | null; source: string } | null;
-  };
+  version: string;
+  game: { appid: number | null; name: string | null };
+  power: PowerState;
   protect: { cap: number | null; floor: number; step: number; emergency_temp: number };
 };
 
 type HistoryPoint = [number, number | null, number | null, number | null];
 
-const getState = callable<[appid: number | null, name: string | null], State>("get_state");
+const getState = callable<[], State>("get_state");
+const setRunningGame = callable<[appid: number | null, name: string | null], boolean>("set_running_game");
+const onSuspend = callable<[], boolean>("on_suspend");
+const onResume = callable<[], boolean>("on_resume");
 const getHistory = callable<[], HistoryPoint[]>("get_history");
 const resetStats = callable<[], boolean>("reset_stats");
 const setEnabled = callable<[enabled: boolean], boolean>("set_enabled");
@@ -264,8 +265,7 @@ function Content() {
 
   const refresh = useCallback(async () => {
     try {
-      const g = runningGame();
-      setState(await getState(g.appid, g.name));
+      setState(await getState());
       if (tick.current++ % 2 === 0) setHistory(await getHistory());
     } catch (e) {
       console.error("Legion of Fans: refresh failed", e);
@@ -303,6 +303,10 @@ function Content() {
   const active = activeStep(state.step_temps, s.control_temp);
   const status = tempStatus(s.control_temp);
   const capped = state.protect.cap != null;
+  const patchEdit = (field: keyof PowerProfile, value: unknown) =>
+    setState((prev) =>
+      prev ? { ...prev, power: { ...prev.power, edit_profile: { ...prev.power.edit_profile, [field]: value } } } : prev,
+    );
 
   const onStep = (index: number, value: number) => {
     const steps = adjustSteps(cfg.steps, index, value);
@@ -349,7 +353,7 @@ function Content() {
                 icon={<FaBolt size={10} />}
                 label="APU"
                 value={fmt(s.apu_w, "W", 1)}
-                sub={capped ? `🛡️ max ${state.protect.cap} W` : `TDP ${fmt(s.tdp_w, "W")}`}
+                sub={capped ? `🛡️ max ${state.protect.cap} W` : `TDP ${fmt(s.tdp_w, "W")}${state.power?.scope && !state.power.scope.startsWith("default") ? " · gioco" : ""}`}
                 color={capped ? WARM : undefined}
               />
               <Mini
@@ -462,34 +466,36 @@ function Content() {
         </Section>
 
         <Section
-          id="game"
-          icon={<FaGamepad />}
-          title="Gioco e TDP"
-          hint={state.game.profile?.tdp != null ? `${state.game.profile.tdp} W` : undefined}
+          id="power"
+          icon={<FaBolt />}
+          title="TDP e GPU"
+          hint={
+            state.power?.profile
+              ? `${state.power.applied_tdp ?? state.power.profile.tdp} W · ${(GPU_LABELS[state.power.profile.gpuMode] ?? "").replace(/^\S+\s/, "")}`
+              : undefined
+          }
         >
-          <PanelSectionRow>
-            <div className="lof-card">
-              <div className="lof-kv">
-                <span>Gioco</span>
-                <span>{state.game.name ?? "nessuno"}</span>
-                <span>Profilo TDP</span>
-                <span>
-                  {state.game.profile?.tdp != null ? `${state.game.profile.tdp} W` : "—"}
-                  {state.game.profile?.gpu_mode ? ` · ${state.game.profile.gpu_mode}` : ""}
-                </span>
-                <span>Origine profilo</span>
-                <span>{state.game.profile?.source ?? "—"}</span>
-                <span>TDP applicato</span>
-                <span>
-                  {[s.tdp_w, s.tdp_slow_w, s.tdp_fast_w].map((v) => (v == null ? "—" : v)).join("/")} W
-                </span>
-                <span>APU · carico GPU</span>
-                <span>
-                  {fmt(s.apu_w, "W", 1)} · {fmt(s.gpu_busy, "%")}
-                </span>
-              </div>
-            </div>
-          </PanelSectionRow>
+          {state.power && (
+            <TdpGpuControls
+              power={state.power}
+              settings={cfg}
+              gameName={state.game.name}
+              capped={state.protect.cap}
+              refresh={refresh}
+              patchEdit={patchEdit}
+              Label={Label}
+            />
+          )}
+        </Section>
+
+        <Section id="cpu" icon={<FaMicrochip />} title="CPU avanzate" hint={state.power ? (state.power.cpu.smt ? "SMT on" : "SMT off") : undefined}>
+          {state.power && (
+            <CpuControls power={state.power} settings={cfg} refresh={refresh} patchEdit={patchEdit} Label={Label} />
+          )}
+        </Section>
+
+        <Section id="poweropts" icon={<FaSlidersH />} title="Opzioni TDP" hint={`max ${cfg.max_tdp} W`}>
+          {state.power && <PowerOptions power={state.power} settings={cfg} refresh={refresh} />}
         </Section>
 
         <Section
@@ -639,7 +645,7 @@ function Content() {
 
         <PanelSectionRow>
           <div className="lof-note" style={{ textAlign: "center", marginTop: 10, color: "rgba(255,255,255,0.35)" }}>
-            {NAME} · <i>{TAGLINE}</i>
+            {NAME} v{state.version} · <i>{TAGLINE}</i>
           </div>
         </PanelSectionRow>
       </PanelSection>
@@ -681,6 +687,29 @@ export default definePlugin(() => {
     },
   );
 
+  // Follow the running game even while the menu is closed (per-game profiles).
+  let lastGame: string | null = null;
+  const gameTimer = setInterval(() => {
+    const g = runningGame();
+    const key = `${g.appid}`;
+    if (key !== lastGame) {
+      lastGame = key;
+      setRunningGame(g.appid, g.name).catch((e) => console.error("Legion of Fans: set_running_game", e));
+    }
+  }, 2000);
+  // Suspend / resume hooks (the backend also detects resume on its own).
+  const unregs: (() => void)[] = [];
+  try {
+    const sys = (window as unknown as { SteamClient?: { System?: Record<string, (cb: () => void) => { unregister: () => void }> } })
+      .SteamClient?.System;
+    const s1 = sys?.RegisterForOnSuspendRequest?.(() => void onSuspend());
+    const s2 = sys?.RegisterForOnResumeFromSuspend?.(() => void onResume());
+    if (s1) unregs.push(() => s1.unregister());
+    if (s2) unregs.push(() => s2.unregister());
+  } catch (e) {
+    console.warn("Legion of Fans: suspend hooks unavailable", e);
+  }
+
   const removeTab = registerQamTab({
     title: <TabTitle />,
     content: (
@@ -700,6 +729,8 @@ export default definePlugin(() => {
       removeEventListener("temp_alert", alertListener);
       removeEventListener("protect_event", protectListener);
       removeTab();
+      clearInterval(gameTimer);
+      unregs.forEach((u) => u());
     },
   };
 });

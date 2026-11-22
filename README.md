@@ -1,13 +1,17 @@
 # Legion of Fans — *Too Hot To Handle*
 
-Plugin [Decky Loader](https://decky.xyz/) per la **Lenovo Legion Go originale (83E1)** su Bazzite / SteamOS: curva della ventola a scaglioni, temperature in tempo reale, statistiche e protezione dal surriscaldamento, tutto dal menu laterale di Steam.
+Plugin [Decky Loader](https://decky.xyz/) per la **Lenovo Legion Go originale (83E1)** su Bazzite / SteamOS: ventola, temperature, **TDP, GPU e CPU per gioco**, statistiche e protezione dal surriscaldamento, tutto in un unico punto del menu laterale di Steam.
 
-> **English:** Decky Loader plugin for the original Lenovo Legion Go (83E1). Step-based fan curve driven through the embedded controller, live temperatures, a 5-minute chart, per-game session stats, an optional gradual TDP protection and the firmware 80 % charge limit. The UI is in Italian.
+> **English:** Decky Loader plugin for the original Lenovo Legion Go (83E1). Step-based fan curve driven through the embedded controller, per-game TDP / GPU / CPU profiles (a Legion Go–only replacement for SimpleDeckyTDP, with automatic import), live temperatures, a 5-minute chart, per-game session stats, an optional gradual TDP protection and the firmware 80 % charge limit. The UI is in Italian.
 
 <p>
   <img src="docs/screenshots/overview.png" width="300" alt="Panoramica">
   <img src="docs/screenshots/fan-curve.png" width="300" alt="Curva ventola">
   <img src="docs/screenshots/sections.png" width="300" alt="Sezioni">
+</p>
+<p>
+  <img src="docs/screenshots/tdp-gpu.png" width="300" alt="TDP e GPU">
+  <img src="docs/screenshots/tdp-options.png" width="300" alt="Opzioni TDP">
 </p>
 
 ## Funzioni
@@ -18,7 +22,14 @@ Plugin [Decky Loader](https://decky.xyz/) per la **Lenovo Legion Go originale (8
 - **Curva della ventola a scaglioni** (40–90 °C ogni 10 °C) regolabile con il pad, con mini grafico e **scaglione attivo evidenziato**.
 - **Profili**: 🤫 Silenziosa, ⚖️ Bilanciata, 🎯 Ottimale, 🚀 Massima, 🤖 **Automatica** (reagisce a quanto in fretta sale la temperatura e al carico dell'APU), 🛠️ Personalizzata.
 - **Salvavita**: da 90 °C, o se la temperatura non è leggibile, ventola sempre al 100 %.
-- **Gioco e TDP**: gioco in esecuzione, profilo di [SimpleDeckyTDP](https://github.com/aarron-lee/SimpleDeckyTDP) e TDP realmente applicato.
+- **TDP e GPU per gioco** (sostituisce [SimpleDeckyTDP](https://github.com/aarron-lee/SimpleDeckyTDP) sulla Legion Go):
+  - TDP da 5 W al massimo scelto (fino a 40 W), scritto sui tre limiti del firmware entro i rispettivi massimi (sostenuto 30, breve 35, picco 41 W);
+  - GPU 🔋 Batteria, ⚖️ Bilanciata, ↔️ Intervallo (min/max MHz), 📌 Fissa;
+  - profili per gioco salvati automaticamente quando cambi qualcosa in gioco, predefinito e predefinito con caricatore;
+  - **CPU avanzate**: SMT, boost, governor, EPP;
+  - opzioni: TDP massimo all'avvio di un gioco, comportamento al risveglio, SMT prima della sospensione;
+  - **controllo intelligente**: riapplica i valori solo se qualcosa li ha cambiati (nessuna scrittura ogni 15 s);
+  - **import automatico** dei profili di SimpleDeckyTDP al primo avvio.
 - **Protezione automatica** (facoltativa): −3 W ogni *N* minuti sopra la soglia (minimo 15 W), +3 W dopo *N* minuti al fresco; freno di emergenza immediato a 92 °C.
 - **Avviso**: notifica di Steam se la temperatura resta sopra la soglia per 10 secondi.
 - **Statistiche della sessione**: massima, media, tempo sopra 85/90 °C, ventola e potenza massime, tagli di potenza del firmware, interventi della protezione. Si azzerano quando cambi gioco.
@@ -28,7 +39,7 @@ Plugin [Decky Loader](https://decky.xyz/) per la **Lenovo Legion Go originale (8
 
 - Lenovo Legion Go **83E1** (prima generazione). Su altri modelli il plugin resta in sola lettura.
 - [Decky Loader](https://decky.xyz/) su Bazzite o SteamOS.
-- Non usarlo insieme ad altri plugin che comandano la ventola (es. Panel de Control).
+- Non usarlo insieme ad altri plugin che comandano ventola o TDP (es. Panel de Control, SimpleDeckyTDP): importa i profili di SimpleDeckyTDP e poi disattivalo, oppure spegni "Controlla il TDP" nelle Opzioni TDP.
 
 ## Installazione
 
@@ -52,6 +63,10 @@ Gli indirizzi sono quelli del DSDT della Legion Go (metodo `GZFD.SFAN`), gli ste
 ### Perché la CPU segna qualche grado in più dell'overlay di Steam
 
 L'overlay (MangoHud) mostra la **media delle temperature dei core** letta dalle metriche dell'SMU. Legion of Fans mostra **Tctl**, il sensore di controllo che il firmware usa per throttling e protezioni: di solito è 2–5 °C più alto, ed è il valore più prudente per comandare la ventola.
+
+### TDP sulla Legion Go
+
+Il TDP passa dal profilo energetico Lenovo `custom` (`lenovo-wmi-gamezone`) e dai tre limiti di `lenovo-wmi-other` (`ppt_pl1_spl`, `ppt_pl2_sppt`, `ppt_pl3_fppt`): lo stesso valore viene scritto su tutti e tre, ciascuno limitato al proprio massimo del firmware. La GPU usa `power_dpm_force_performance_level` (`low` / `auto` / `manual`) e, in manuale, `pp_od_clk_voltage`.
 
 ### Il caricatore
 

@@ -30,6 +30,7 @@ import time
 from collections import deque
 
 import decky
+import lof_power as power
 
 # --- EC map -----------------------------------------------------------------
 EC_BASE = 0xFE0B0000
@@ -96,7 +97,24 @@ DEFAULT_SETTINGS = {
     # Lenovo firmware charge limit (Long_Life = stop at ~80 %), re-applied at
     # start and checked every minute in case something resets it.
     "charge_limit": True,
+    # --- TDP / GPU / CPU (the SimpleDeckyTDP features, Legion Go only) ---
+    "tdp_enabled": True,         # write the TDP
+    "gpu_enabled": True,         # write the GPU mode
+    "cpu_enabled": True,         # write SMT / boost / governor / EPP
+    "per_game": True,            # one profile per game (auto-saved when you change it in game)
+    "ac_profiles": False,        # separate default profile while the charger is connected
+    "max_tdp": 40,               # upper end of the TDP slider
+    "smart_check": True,         # every few seconds, re-apply only if something changed it
+    "max_tdp_on_resume": False,  # after waking up, run at max TDP for a short while
+    "skip_tdp_on_resume": False,  # after waking up, don't touch the TDP at all
+    "suspend_actions": True,     # turn SMT on before suspending (as SimpleDeckyTDP)
+    "max_tdp_on_game_change_s": 0,  # seconds of max TDP after a game starts (0 = off)
+    "tdp_profiles": {},
+    "sdtdp_imported": False,
 }
+TDP_MIN_W = 5
+SMART_CHECK_EVERY_S = 5
+RESUME_BOOST_S = 15
 
 CHARGE_TYPES = "/sys/class/power_supply/BATT/charge_types"
 
@@ -129,6 +147,13 @@ def _hwmon(name):
         if _read(os.path.join(h, "name")) == name:
             return h
     return None
+
+
+def _boottime():
+    """Seconds since boot including suspend (Linux CLOCK_BOOTTIME). Elsewhere it
+    falls back to monotonic, which simply disables resume detection."""
+    clk = getattr(time, "CLOCK_BOOTTIME", None)
+    return time.clock_gettime(clk) if clk is not None else time.monotonic()
 
 
 def interp(steps, temp):
@@ -267,6 +292,17 @@ class Plugin:
         self._protect_cool_since = None
         self._protect_emergency_since = None
         self._protect_last_step = 0.0
+        # TDP / GPU / CPU
+        self.game_appid = None
+        self.game_name = None
+        self._applied = None          # (scope key, effective profile) last applied
+        self._force_apply = True
+        self._last_check = 0.0
+        self.corrections = 0          # times something else changed our values
+        self._boost_until = 0.0       # max TDP window (game start / resume)
+        self._clock = (time.monotonic(), _boottime())
+        if self.supported and not self.settings.get("sdtdp_imported"):
+            self._import_sdtdp()
         decky.logger.info(f"Legion of Fans started: product={product} ec_ok={self.ec_ok}")
         self.task = asyncio.get_event_loop().create_task(self._loop())
 
@@ -274,6 +310,9 @@ class Plugin:
         if getattr(self, "task", None):
             self.task.cancel()
         self._release()
+        if getattr(self, "cap", None) is not None and self.settings.get("tdp_enabled"):
+            self.cap = None
+            power.set_tdp(self._effective(time.monotonic())[1]["tdp"])  # drop the protection cap
         self._protect_restore()
         decky.logger.info("Legion of Fans unloaded, fan and TDP handed back")
 
@@ -283,7 +322,7 @@ class Plugin:
 
     # ---------------------------------------------------------------- settings
     def _load_settings(self):
-        s = dict(DEFAULT_SETTINGS)
+        s = json.loads(json.dumps(DEFAULT_SETTINGS))  # deep copy: nested defaults stay pristine
         try:
             with open(SETTINGS_PATH) as f:
                 s.update(json.load(f))
@@ -293,7 +332,135 @@ class Plugin:
         s["alert_temp"] = max(70, min(95, int(s.get("alert_temp", 88))))
         s["protect_temp"] = max(75, min(90, int(s.get("protect_temp", 88))))
         s["protect_interval_min"] = max(3, min(15, int(s.get("protect_interval_min", 5))))
+        s["max_tdp"] = max(15, min(40, int(s.get("max_tdp", 40))))
+        s["max_tdp_on_game_change_s"] = max(0, min(60, int(s.get("max_tdp_on_game_change_s", 0))))
+        profiles = s.get("tdp_profiles") or {}
+        profiles.setdefault("default", dict(power.DEFAULT_PROFILE, tdp=10))
+        profiles.setdefault("default-ac-power", dict(profiles["default"]))
+        s["tdp_profiles"] = profiles
         return s
+
+    def _import_sdtdp(self):
+        """One-time import of SimpleDeckyTDP's profiles and options."""
+        try:
+            with open(SDTDP_SETTINGS) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            self.settings["sdtdp_imported"] = True
+            self._save_settings()
+            return
+        adv = d.get("advanced") or {}
+        profiles = {k: power.profile_from_sdtdp(v) for k, v in (d.get("tdpProfiles") or {}).items()}
+        if profiles:
+            self.settings["tdp_profiles"].update(profiles)
+        self.settings.update({
+            "per_game": bool(d.get("enableTdpProfiles", True)),
+            "max_tdp": max(15, min(40, int(d.get("maxTdp") or 40))),
+            "tdp_enabled": bool(adv.get("enableTdpControl", True)),
+            "gpu_enabled": bool(adv.get("enableGpuControl", True)),
+            "cpu_enabled": bool(adv.get("enablePowercontrol", True)),
+            "ac_profiles": bool(adv.get("acPowerProfiles", False)),
+            "max_tdp_on_resume": bool(adv.get("maxTdpOnResume", False)),
+            "skip_tdp_on_resume": bool(adv.get("forceDisableTdpOnResume", False)),
+            "suspend_actions": not bool(adv.get("forceDisableSuspendActions", False)),
+            "max_tdp_on_game_change_s": max(0, min(60, int(adv.get("maxTdpOnGameProfileChange") or 0))),
+            "sdtdp_imported": True,
+        })
+        self._save_settings()
+        decky.logger.info(f"Imported {len(profiles)} SimpleDeckyTDP profiles")
+
+    # ---------------------------------------------------------------- TDP / GPU / CPU
+    def _scope(self, ac_online=None):
+        """Key of the profile in use: the game's, or the (AC) default."""
+        profiles = self.settings["tdp_profiles"]
+        if ac_online is None:
+            ac_online = _read("/sys/class/power_supply/ACAD/online") == "1"
+        if self.settings["per_game"] and self.game_appid and str(self.game_appid) in profiles:
+            return str(self.game_appid)
+        if self.settings["ac_profiles"] and ac_online:
+            return "default-ac-power"
+        return "default"
+
+    def _edit_scope(self):
+        """Where a change made now is saved: the running game (created on the
+        first change, like SimpleDeckyTDP) or the (AC) default."""
+        profiles = self.settings["tdp_profiles"]
+        if self.settings["per_game"] and self.game_appid:
+            key = str(self.game_appid)
+            if key not in profiles:
+                profiles[key] = dict(profiles[self._scope_default()])
+            return key
+        return self._scope_default()
+
+    def _scope_default(self):
+        ac = _read("/sys/class/power_supply/ACAD/online") == "1"
+        return "default-ac-power" if self.settings["ac_profiles"] and ac else "default"
+
+    def _effective(self, now):
+        key = self._scope()
+        prof = dict(self.settings["tdp_profiles"][key])
+        tdp = int(prof.get("tdp", 15))
+        if now < self._boost_until:
+            tdp = self.settings["max_tdp"]
+        tdp = min(tdp, self.settings["max_tdp"])
+        if self.cap is not None:
+            tdp = min(tdp, self.cap)
+        prof["tdp"] = max(TDP_MIN_W, tdp)
+        return key, prof
+
+    def _apply_power(self, prof):
+        s = self.settings
+        if s["tdp_enabled"]:
+            power.set_tdp(prof["tdp"])
+        if s["gpu_enabled"]:
+            power.set_gpu(prof)
+        if s["cpu_enabled"]:
+            power.set_cpu(prof)
+
+    def _power_matches(self, prof):
+        s = self.settings
+        return ((not s["tdp_enabled"] or power.tdp_matches(prof["tdp"]))
+                and (not s["gpu_enabled"] or power.gpu_matches(prof))
+                and (not s["cpu_enabled"] or power.cpu_matches(prof)))
+
+    async def _power_tick(self, now):
+        if not self.supported:
+            return
+        # Resume detection: CLOCK_BOOTTIME keeps counting during suspend, monotonic does not.
+        mono, boot = time.monotonic(), _boottime()
+        slept = (boot - self._clock[1]) - (mono - self._clock[0])
+        self._clock = (mono, boot)
+        if slept > 5:
+            await self._on_resumed(now)
+        key, prof = self._effective(now)
+        loop = asyncio.get_event_loop()
+        if self._force_apply or self._applied != (key, prof):
+            self._force_apply = False
+            self._applied = (key, prof)
+            self._last_check = now
+            await loop.run_in_executor(None, self._apply_power, prof)
+        elif self.settings["smart_check"] and now - self._last_check >= SMART_CHECK_EVERY_S:
+            self._last_check = now
+            if not await loop.run_in_executor(None, self._power_matches, prof):
+                self.corrections += 1
+                await loop.run_in_executor(None, self._apply_power, prof)
+
+    async def _on_resumed(self, now):
+        decky.logger.info("Resume detected")
+        for _ in range(20):  # the WMI interface can take a few seconds to come back
+            if power.wmi_ready():
+                break
+            await asyncio.sleep(0.5)
+        if self.settings["skip_tdp_on_resume"]:
+            self._applied = self._effective(now)  # leave the firmware's TDP alone
+            return
+        if self.settings["max_tdp_on_resume"]:
+            self._boost_until = time.monotonic() + RESUME_BOOST_S
+        self._force_apply = True
+
+    def _profile_view(self, key):
+        p = self.settings["tdp_profiles"].get(key, {})
+        return dict(p)
 
     def _save_settings(self):
         os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
@@ -397,7 +564,11 @@ class Plugin:
             current = read_tdp()
             if self.cap is None:
                 self._cap_original = current
-            base = self.cap if self.cap is not None else (current["ppt_pl1_spl"] or 25)
+            if self.settings["tdp_enabled"]:
+                profile_tdp = int(self.settings["tdp_profiles"][self._scope()].get("tdp", 25))
+                base = self.cap if self.cap is not None else min(profile_tdp, self.settings["max_tdp"])
+            else:
+                base = self.cap if self.cap is not None else (current["ppt_pl1_spl"] or 25)
             new_cap = max(PROTECT_FLOOR_W, base - PROTECT_STEP_W)
             if new_cap < base:
                 first = self.cap is None
@@ -410,7 +581,10 @@ class Plugin:
                 await decky.emit("protect_event", "on" if first else "down", new_cap, temp)
         elif (self.cap is not None and cool and now - self._protect_cool_since >= interval
               and since_step >= interval):
-            original = (self._cap_original or {}).get("ppt_pl1_spl") or 25
+            if self.settings["tdp_enabled"]:
+                original = int(self.settings["tdp_profiles"][self._scope()].get("tdp", 25))
+            else:
+                original = (self._cap_original or {}).get("ppt_pl1_spl") or 25
             self._protect_last_step = now
             self._protect_cool_since = now
             if self.cap + PROTECT_STEP_W >= original:
@@ -420,9 +594,10 @@ class Plugin:
                 self.cap += PROTECT_STEP_W
                 decky.logger.info(f"Protection: TDP cap raised to {self.cap} W ({temp} C)")
 
-        # Enforce the cap every cycle: SimpleDeckyTDP re-applies its profile
-        # periodically, so a lowered value would otherwise be overwritten.
-        if self.cap is not None:
+        # When we own the TDP the cap is applied through the active profile
+        # (_effective). Otherwise another tool (e.g. SimpleDeckyTDP) may re-apply
+        # its value periodically, so enforce the cap here every cycle.
+        if self.cap is not None and not self.settings["tdp_enabled"]:
             for rail, val in read_tdp().items():
                 if val is not None and val > self.cap:
                     write_tdp_rail(rail, self.cap)
@@ -430,9 +605,12 @@ class Plugin:
     def _protect_restore(self):
         if getattr(self, "cap", None) is None:
             return
-        for rail, val in (self._cap_original or {}).items():
-            if val is not None:
-                write_tdp_rail(rail, val)
+        if self.settings.get("tdp_enabled"):
+            self._force_apply = True  # the profile's TDP comes back on the next tick
+        else:
+            for rail, val in (self._cap_original or {}).items():
+                if val is not None:
+                    write_tdp_rail(rail, val)
         decky.logger.info("Protection: TDP restored")
         self.cap = None
         self._cap_original = None
@@ -529,6 +707,7 @@ class Plugin:
                 self.history.append((now, temp, s["fan_rpm"], s.get("apu_w")))
                 self._update_stats(s, temp, now)
                 await self._protect(temp, now)
+                await self._power_tick(now)
                 await self._check_alert(temp, now)
                 if now - last_charge_check >= 60:
                     last_charge_check = now
@@ -553,27 +732,33 @@ class Plugin:
         else:
             self._hot_since = None
 
-    # ---------------------------------------------------------------- game
-    def _game_profile(self, appid):
-        try:
-            with open(SDTDP_SETTINGS) as f:
-                d = json.load(f)
-        except (OSError, ValueError):
-            return None
-        profiles = d.get("tdpProfiles", {})
-        prof = profiles.get(str(appid)) if appid and d.get("enableTdpProfiles") else None
-        source = "gioco" if prof else "predefinito"
-        prof = prof or profiles.get("default") or {}
-        return {"tdp": prof.get("tdp"), "gpu_mode": prof.get("gpuMode"), "source": source}
-
     # ---------------------------------------------------------------- frontend API
-    async def get_state(self, appid=None, name=None):
+    async def set_running_game(self, appid=None, name=None):
+        """Called by the frontend whenever the running game changes (also while
+        the menu is closed)."""
         appid = int(appid) if appid else None
-        if appid != self.stats["appid"]:
-            self.stats = new_stats(appid, name)
+        if appid == self.game_appid:
+            return True
+        self.game_appid, self.game_name = appid, name
+        self.stats = new_stats(appid, name)
+        secs = self.settings["max_tdp_on_game_change_s"]
+        if appid and secs:
+            self._boost_until = time.monotonic() + secs
+        self._force_apply = True
+        decky.logger.info(f"Game changed: {appid} {name}")
+        return True
+
+    async def get_state(self, appid=None, name=None):
+        if appid is not None or name is not None:
+            await self.set_running_game(appid, name)
         st = dict(self.stats)
         st["temp_avg"] = round(st["temp_sum"] / st["temp_samples"], 1) if st["temp_samples"] else None
+        key = self._scope() if self.supported else "default"
+        edit_key = (str(self.game_appid) if self.settings["per_game"] and self.game_appid
+                    else self._scope_default())
+        rails = power.read_rails() if self.supported else {}
         return {
+            "version": getattr(decky, "DECKY_PLUGIN_VERSION", "?"),
             "supported": self.supported,
             "ec_ok": self.ec_ok,
             "driving": self.driving,
@@ -584,13 +769,90 @@ class Plugin:
             "step_temps": STEP_TEMPS,
             "presets": PRESETS,
             "auto_mode": AUTO_MODE,
-            "settings": self.settings,
+            "settings": {k: v for k, v in self.settings.items() if k != "tdp_profiles"},
             "sensors": self.state,
             "stats": st,
-            "game": {"appid": appid, "name": name, "profile": self._game_profile(appid)},
+            "game": {"appid": self.game_appid, "name": self.game_name},
+            "power": {
+                "scope": key,
+                "edit_scope": edit_key,
+                "has_game_profile": bool(self.game_appid and str(self.game_appid) in self.settings["tdp_profiles"]),
+                "profile": self._profile_view(key),
+                "edit_profile": self._profile_view(edit_key) or self._profile_view(self._scope_default()),
+                "applied_tdp": (self._applied[1]["tdp"] if self._applied else None),
+                "boosting": time.monotonic() < self._boost_until,
+                "rails": rails,
+                "rail_limits": power.rail_limits() if self.supported else {},
+                "tdp_min": TDP_MIN_W,
+                "gpu_level": power.gpu_level(),
+                "gpu_range": power.gpu_clock_range(),
+                "gpu_modes": list(power.GPU_MODES),
+                "cpu": {**power.cpu_options(), **power.cpu_state()},
+                "corrections": self.corrections,
+                "profile_count": len(self.settings["tdp_profiles"]),
+            },
             "protect": {"cap": self.cap, "floor": PROTECT_FLOOR_W, "step": PROTECT_STEP_W,
                         "emergency_temp": PROTECT_EMERGENCY_C},
         }
+
+    async def set_profile_value(self, field: str, value):
+        """Change one value of the profile being edited (game or default)."""
+        allowed = {"tdp", "gpuMode", "minGpuFrequency", "maxGpuFrequency", "fixedGpuFrequency",
+                   "smt", "cpuBoost", "powerGovernor", "epp"}
+        if field not in allowed:
+            return False
+        if field == "tdp":
+            value = max(TDP_MIN_W, min(self.settings["max_tdp"], int(value)))
+        elif field == "gpuMode" and value not in power.GPU_MODES:
+            return False
+        elif field.endswith("GpuFrequency"):
+            lo, hi = power.gpu_clock_range()
+            value = max(lo, min(hi, int(value)))
+        elif field in ("smt", "cpuBoost"):
+            value = bool(value)
+        key = self._edit_scope()
+        prof = self.settings["tdp_profiles"][key]
+        prof[field] = value
+        if field == "minGpuFrequency":
+            prof["maxGpuFrequency"] = max(prof.get("maxGpuFrequency", value), value)
+        if field == "maxGpuFrequency":
+            prof["minGpuFrequency"] = min(prof.get("minGpuFrequency", value), value)
+        self._save_settings()
+        self._force_apply = True
+        return True
+
+    async def reset_game_profile(self):
+        """Forget the running game's own profile: it goes back to the default."""
+        if self.game_appid and str(self.game_appid) in self.settings["tdp_profiles"]:
+            del self.settings["tdp_profiles"][str(self.game_appid)]
+            self._save_settings()
+            self._force_apply = True
+        return True
+
+    async def set_power_option(self, name: str, value):
+        bools = {"tdp_enabled", "gpu_enabled", "cpu_enabled", "per_game", "ac_profiles", "smart_check",
+                 "max_tdp_on_resume", "skip_tdp_on_resume", "suspend_actions"}
+        if name in bools:
+            self.settings[name] = bool(value)
+        elif name == "max_tdp":
+            self.settings[name] = max(15, min(40, int(value)))
+        elif name == "max_tdp_on_game_change_s":
+            self.settings[name] = max(0, min(60, int(value)))
+        else:
+            return False
+        self._save_settings()
+        self._force_apply = True
+        return True
+
+    async def on_suspend(self):
+        """Before suspending: SMT back on, as SimpleDeckyTDP does."""
+        if self.supported and self.settings["suspend_actions"] and self.settings["cpu_enabled"]:
+            power.set_smt(True)
+        return True
+
+    async def on_resume(self):
+        await self._on_resumed(time.monotonic())
+        return True
 
     async def get_history(self):
         """[[seconds_ago, temp, rpm, apu_w], ...] oldest first, one point every 2 s."""
