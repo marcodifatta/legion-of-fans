@@ -490,6 +490,7 @@ class Plugin:
             "board_c": _num(f"{acpi}/temp1_input", 1000) if acpi else None,
             "apu_w": _num(f"{gpu}/power1_input", 1_000_000) if gpu else None,
             "gpu_busy": _num(busy[0], 1, 0) if busy else None,
+            "cpu_mhz": self._cpu_mhz(),
             "tdp_w": tdp["ppt_pl1_spl"],
             "tdp_slow_w": tdp["ppt_pl2_sppt"],
             "tdp_fast_w": tdp["ppt_pl3_fppt"],
@@ -502,6 +503,11 @@ class Plugin:
             # USB-PD contract current only: the voltage is not exposed, 20 V assumed.
             "charger_max_w_est": round(20 * pd_ma / 1000) if pd_ma else None,
         }
+
+    def _cpu_mhz(self):
+        vals = [_int(f) for f in glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")]
+        vals = [v for v in vals if v]
+        return round(sum(vals) / len(vals) / 1000) if vals else None
 
     def _control_temp(self, s):
         temps = [t for t in (s.get("cpu_c"), s.get("gpu_c")) if t is not None]
@@ -739,11 +745,22 @@ class Plugin:
         appid = int(appid) if appid else None
         if appid == self.game_appid:
             return True
+        now = time.monotonic()
+        last = getattr(self, "_last_game", (None, 0.0))
+        same_session = appid is not None and appid == last[0] and now - last[1] < 60
+        if appid is not None:
+            self._last_game = (appid, now)
+        elif self.game_appid is not None:
+            self._last_game = (self.game_appid, now)
         self.game_appid, self.game_name = appid, name
-        self.stats = new_stats(appid, name)
-        secs = self.settings["max_tdp_on_game_change_s"]
-        if appid and secs:
-            self._boost_until = time.monotonic() + secs
+        # A game that comes back within a minute (Steam briefly reporting no game)
+        # keeps its session statistics and gets no extra start-up boost.
+        # Statistics restart only when a (different) game starts, never on "no game".
+        if appid is not None and not same_session:
+            self.stats = new_stats(appid, name)
+            secs = self.settings["max_tdp_on_game_change_s"]
+            if appid and secs:
+                self._boost_until = now + secs
         self._force_apply = True
         decky.logger.info(f"Game changed: {appid} {name}")
         return True

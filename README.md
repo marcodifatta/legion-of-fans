@@ -68,6 +68,10 @@ L'overlay (MangoHud) mostra la **media delle temperature dei core** letta dalle 
 
 Il TDP passa dal profilo energetico Lenovo `custom` (`lenovo-wmi-gamezone`) e dai tre limiti di `lenovo-wmi-other` (`ppt_pl1_spl`, `ppt_pl2_sppt`, `ppt_pl3_fppt`): lo stesso valore viene scritto su tutti e tre, ciascuno limitato al proprio massimo del firmware. La GPU usa `power_dpm_force_performance_level` (`low` / `auto` / `manual`) e, in manuale, `pp_od_clk_voltage`.
 
+### Undervolt
+
+Non disponibile: il firmware della Legion Go rifiuta il Curve Optimizer (`set_coall is rejected by SMU`), anche con valore 0. Dettagli in [docs/STORIA.md](docs/STORIA.md).
+
 ### Il caricatore
 
 Linux espone solo la corrente USB-PD negoziata (es. 3,25 A), non la tensione né la potenza in ingresso: la potenza del caricatore è quindi una stima a 20 V.

@@ -59,6 +59,7 @@ type Sensors = {
   charger_max_w_est: number | null;
   fan_rpm: number | null;
   control_temp: number | null;
+  cpu_mhz: number | null;
 };
 
 type Settings = {
@@ -217,7 +218,7 @@ function FanIcon({ rpm, size = 14 }: { rpm?: number | null; size?: number }) {
   );
 }
 
-function BigTemp(props: { icon: ReactNode; label: string; temp: number | null | undefined }) {
+function BigTemp(props: { icon: ReactNode; label: string; temp: number | null | undefined; sub?: string }) {
   return (
     <div className="lof-metric">
       <span className="lof-metric-label">
@@ -229,6 +230,7 @@ function BigTemp(props: { icon: ReactNode; label: string; temp: number | null | 
         <span className="lof-metric-unit">°C</span>
       </span>
       <TempBar temp={props.temp} />
+      {props.sub && <span className="lof-mini-sub">{props.sub}</span>}
     </div>
   );
 }
@@ -339,7 +341,12 @@ function Content() {
               </span>
             </div>
             <div className="lof-temps">
-              <BigTemp icon={<FaMicrochip />} label="CPU" temp={s.cpu_c} />
+              <BigTemp
+                icon={<FaMicrochip />}
+                label="CPU"
+                temp={s.cpu_c}
+                sub={`${s.cpu_mhz != null ? `${(s.cpu_mhz / 1000).toFixed(2)} GHz` : ""}`}
+              />
               <BigTemp icon={<BsGpuCard />} label="GPU" temp={s.gpu_c} />
             </div>
             <div className="lof-row3">
@@ -497,6 +504,7 @@ function Content() {
         <Section id="poweropts" icon={<FaSlidersH />} title="Opzioni TDP" hint={`max ${cfg.max_tdp} W`}>
           {state.power && <PowerOptions power={state.power} settings={cfg} refresh={refresh} />}
         </Section>
+
 
         <Section
           id="protect"
@@ -688,9 +696,14 @@ export default definePlugin(() => {
   );
 
   // Follow the running game even while the menu is closed (per-game profiles).
+  // Steam sometimes reports "no game" for a few seconds while one is running:
+  // a game counts as closed only after 5 polls (10 s) without it.
   let lastGame: string | null = null;
+  let missing = 0;
   const gameTimer = setInterval(() => {
     const g = runningGame();
+    if (g.appid == null && lastGame !== null && lastGame !== "null" && ++missing < 5) return;
+    missing = 0;
     const key = `${g.appid}`;
     if (key !== lastGame) {
       lastGame = key;

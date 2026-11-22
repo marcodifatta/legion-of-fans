@@ -26,3 +26,9 @@ Una Legion Go con Bazzite si spegneva all'improvviso durante il gioco, sempre co
 Il kernel non permette di leggere né comandare la ventola della Legion Go originale. Studiando come Panel de Control usa la tabella ventola dell'embedded controller, è nato un plugin più semplice e focalizzato: ventola, temperature e protezione, con una curva a scaglioni comoda da regolare con il pad.
 
 Per progettare l'interfaccia è stato usato il debugger remoto di Steam (`tools/cef.mjs`) per catturare screenshot del menu laterale direttamente dalla Legion Go.
+
+## TDP integrato e undervolt
+
+Con la 0.5.0 Legion of Fans ha assorbito le funzioni di SimpleDeckyTDP (profili per gioco, GPU, CPU) importandone i profili, per avere un unico plugin e niente più conflitti tra plugin che riscrivono il TDP.
+
+È stato valutato anche l'undervolt con il Curve Optimizer di AMD tramite `ryzenadj`: sulla Legion Go sono presenti sia `ryzenadj` sia il modulo `ryzen_smu`, ma il firmware rifiuta il comando anche con valore 0 (`rejected by SMU`). Per questo l'undervolt non è stato introdotto. Il codice preparato (crash guard e test di stabilità guidato con `stress-ng`) è conservato in `docs/undervolt-experiment.py`, nel caso un futuro BIOS lo sblocchi.

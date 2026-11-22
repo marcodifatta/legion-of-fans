@@ -2,6 +2,17 @@
 
 Formato ispirato a [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.5.1] — 2026-11-22
+
+### Aggiunto
+- Frequenza media della CPU sotto la temperatura CPU (anche nel monitor `tools/thermal-logger.sh`).
+
+### Corretto
+- Steam a volte segnala per qualche secondo "nessun gioco" mentre un gioco è aperto: prima il plugin applicava il profilo predefinito e azzerava le statistiche. Ora un gioco risulta chiuso solo dopo 10 secondi senza segnale, e se ricompare entro un minuto mantiene statistiche e profilo.
+
+### Verificato e scartato
+- **Undervolt (Curve Optimizer)**: il firmware della Legion Go rifiuta il comando anche con valore 0 (`set_coall is rejected by SMU`, `set_cogfx is rejected by SMU`). La funzione non è stata introdotta; il codice dell'esperimento è in `docs/undervolt-experiment.py`.
+
 ## [0.5.0] — 2026-11-22
 
 ### Aggiunto

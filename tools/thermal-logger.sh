@@ -22,7 +22,7 @@ PPT=/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes
 PROF=$(for p in /sys/class/platform-profile/*; do [ "$(cat "$p/name")" = "lenovo-wmi-gamezone" ] && echo "$p"; done)
 GPUBUSY=$(ls /sys/class/drm/card*/device/gpu_busy_percent 2>/dev/null | head -1)
 
-HEADER="time,cpu_c,gpu_c,acpi_c,nvme_c,gpu_w,gpu_avg_w,gpu_busy_pct,gpu_mhz,bat_w,bat_pct,bat_status,ac_online,tdp_spl,tdp_sppt,tdp_fppt,profile,load1,fan_rpm"
+HEADER="time,cpu_c,gpu_c,acpi_c,nvme_c,gpu_w,gpu_avg_w,gpu_busy_pct,gpu_mhz,bat_w,bat_pct,bat_status,ac_online,tdp_spl,tdp_sppt,tdp_fppt,profile,load1,fan_rpm,cpu_mhz"
 
 last_cleanup=0
 while true; do
@@ -31,7 +31,7 @@ while true; do
   # fan hwmon only appears once a tool (e.g. Panel de Control) exposes it, so look it up each time
   FAN=$(hwmon lenovo_wmi_other)
   gmhz=$(rd "$GPU/freq1_input"); [ -n "$gmhz" ] && gmhz=$((gmhz / 1000000))
-  line="$(date +%FT%T),$(m1 "$CPU/temp1_input"),$(m1 "$GPU/temp1_input"),$(m1 "$ACPI/temp1_input"),$(m1 "$NVME/temp1_input"),$(u1 "$GPU/power1_input"),$(u1 "$GPU/power1_average"),$(rd "$GPUBUSY"),$gmhz,$(u1 "$BATH/power1_input"),$(rd "$BAT/capacity"),$(rd "$BAT/status"),$(rd "$AC/online"),$(rd "$PPT/ppt_pl1_spl/current_value"),$(rd "$PPT/ppt_pl2_sppt/current_value"),$(rd "$PPT/ppt_pl3_fppt/current_value"),$(rd "$PROF/profile"),$(cut -d' ' -f1 /proc/loadavg),$([ -n "$FAN" ] && rd "$FAN/fan1_input")"
+  line="$(date +%FT%T),$(m1 "$CPU/temp1_input"),$(m1 "$GPU/temp1_input"),$(m1 "$ACPI/temp1_input"),$(m1 "$NVME/temp1_input"),$(u1 "$GPU/power1_input"),$(u1 "$GPU/power1_average"),$(rd "$GPUBUSY"),$gmhz,$(u1 "$BATH/power1_input"),$(rd "$BAT/capacity"),$(rd "$BAT/status"),$(rd "$AC/online"),$(rd "$PPT/ppt_pl1_spl/current_value"),$(rd "$PPT/ppt_pl2_sppt/current_value"),$(rd "$PPT/ppt_pl3_fppt/current_value"),$(rd "$PROF/profile"),$(cut -d' ' -f1 /proc/loadavg),$([ -n "$FAN" ] && rd "$FAN/fan1_input"),$(cat /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq 2>/dev/null | awk '{s+=$1;n++} END{if(n) printf "%d", s/n/1000}')"
   echo "$line" >> "$f"
   sync "$f" 2>/dev/null
 
